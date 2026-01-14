@@ -8,6 +8,8 @@ from tqdm import tqdm
 import numpy as np
 from fastembed import TextEmbedding
 from qdrant_client import QdrantClient
+import fastembed, qdrant_client
+logging.info("fastembed=%s qdrant-client=%s model=%s", fastembed.__version__, qdrant_client.__version__, embed_model)
 from qdrant_client.models import VectorParams, Distance, PointStruct
 from rag.chunk import split_markdown_into_chunks, Chunk
 
@@ -67,7 +69,7 @@ def ingest_markdown_files(
 
     logging.info("Total chunks: %d", len(texts))
 
-    embed_model = "sentence-transformers/all-MiniLM-L6-v2"
+    embed_model = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     embedder = TextEmbedding(model_name=embed_model)
 
     first_vec = next(embedder.embed([texts[0]])).astype(np.float32)
