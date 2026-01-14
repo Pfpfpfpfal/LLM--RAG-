@@ -6,11 +6,12 @@ st.title("Notes RAG")
 
 api_url = st.sidebar.text_input("API URL", "http://127.0.0.1:8000/ask")
 strict = st.sidebar.checkbox("Строгий режим", value=True)
+mode = st.sidebar.selectbox("Режим", ["llm", "extractive"], index=0)
 
 q = st.text_input("Вопрос", placeholder="Например: Что такое serializable?")
 
 if st.button("Спросить") and q.strip():
-    resp = requests.post(api_url, json={"query": q, "strict": strict}, timeout=60)
+    resp = requests.post(api_url, json={"query": q, "strict": strict, "mode": mode}, timeout=120)
     # st.write(f"HTTP {resp.status_code}")
     # st.text(resp.text[:2000])
 
