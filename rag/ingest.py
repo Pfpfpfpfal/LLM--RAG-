@@ -1,119 +1,118 @@
 from __future__ import annotations
-print("INGEST: imported annotations")
 from pathlib import Path
-print("INGEST: imported Path")
-import json, hashlib, logging
-print("INGEST: imported stdlib")
-from typing import List, Dict, Any
-print("INGEST: imported typing")
-import numpy as np
-print("INGEST: imported numpy")
+import json
+import hashlib
+import logging
+from typing import Dict, Any, List
 from tqdm import tqdm
-print("INGEST: imported tqdm")
-from rank_bm25 import BM25Okapi
-print("INGEST: imported rank_bm25")
-# from sentence_transformers import SentenceTransformer
-# print("INGEST: imported sentence_transformers")
-# import faiss
-# print("INGEST: imported faiss")
+import numpy as np
+from fastembed import TextEmbedding
+from qdrant_client import QdrantClient
+from qdrant_client.models import VectorParams, Distance, PointStruct
 from rag.chunk import split_markdown_into_chunks, Chunk
-print("INGEST: imported rag.chunk")
 
-print("started ingestion script...")
+def file_hash(path: Path) -> str:
+    h = hashlib.sha256()
+    h.update(path.read_bytes())
+    return h.hexdigest()
 
-log_path = Path("data/index/ingest.log")
-log_path.parent.mkdir(parents=True, exist_ok=True)
-
-logging.basicConfig(
-    filename=str(log_path),
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
-    force=True,
-)
-logging.getLogger().addHandler(logging.StreamHandler())
-logging.info("Logger initialized. CWD=%s", Path.cwd())
-
-
-def file_hash(file_path: Path) -> str:
-    hasher = hashlib.sha256()
-    hasher.update(file_path.read_bytes())
-    return hasher.hexdigest()
-
-def simple_tokenizer(text: str) -> List[str]:
-    text = text.lower()
-    text = text.replace("`", " ").replace("*", " ").replace("#", " ")
-    token = []
-    cur = []
-    for ch in text:
-        if ch.isalnum() or ch in ("_",):
-            cur.append(ch)
-        else:
-            if cur:
-                token.append("".join(cur))
-                cur = []
-    if cur:
-        token.append("".join(cur))
-    return token
-
-def ingest_markdown_files(notes_dir: str = "data/notes", index_dir: str = "data/index"):
-    notes_path = Path(notes_dir)
+def ingest_markdown_files(
+    notes_dir: str = "data/notes",
+    index_dir: str = "data/index",
+    qdrant_url: str = "http://127.0.0.1:6333",
+    collection_name: str = "notes_chunks",
+):
     out = Path(index_dir)
     out.mkdir(parents=True, exist_ok=True)
-    
-    md_files =sorted(notes_path.rglob("*.md"))
+
+    log_path = out / "ingest.log"
+    logging.basicConfig(
+        filename=str(log_path),
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        force=True,
+    )
+    logging.getLogger().addHandler(logging.StreamHandler())
+    logging.info("Logger initialized. CWD=%s", Path.cwd())
+
+    notes_path = Path(notes_dir)
+    md_files = sorted(notes_path.rglob("*.md"))
     if not md_files:
-        raise RuntimeError(f"No markdown files found in {notes_dir}")
-    
+        raise RuntimeError(f"No .md files found in {notes_dir}")
+
     all_chunks: List[Chunk] = []
-    file_manifests: Dict[str, Any] = {}
-    
+    file_manifest: Dict[str, Any] = {}
+
+    logging.info("Chunking %d files...", len(md_files))
     for f in tqdm(md_files, desc="files", unit="file"):
         rel = str(f.relative_to(notes_path)).replace("\\", "/")
         txt = f.read_text(encoding="utf-8", errors="ignore")
-        h = file_hash(f)
-        file_manifests[rel] = {"sha256": h}
-        
+        file_manifest[rel] = {"sha256": file_hash(f)}
+
         chunks = split_markdown_into_chunks(txt, source_file=rel, max_chars=1200, overlap=100)
-        logging.info(f"{rel} chunks={len(chunks)} chars={sum(len(c.text) for c in chunks)}")
-        for i, c in enumerate(chunks):
+        for c in chunks:
             c.meta["chunk_id"] = f"{rel}::sec{c.meta['section_index']}::ch{c.meta['chunk_in_section']}"
         all_chunks.extend(chunks)
-        
-        if len(all_chunks) % 200 == 0:
-            logging.info("Progress: files processed=%d/%d, total_chunks=%d", md_files.index(f)+1, len(md_files), len(all_chunks))
 
-        
+        logging.info("%s chunks=%d chars=%d", rel, len(chunks), sum(len(c.text) for c in chunks))
+
     texts = [c.text for c in all_chunks]
     metas = [c.meta for c in all_chunks]
-    
-    # tokenized = [simple_tokenizer(t) for t in texts]
-    # bm25 = BM25Okapi(tokenized)
-    
-    # logging.info("Loading embedding model...")
-    # model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
-    # logging.info("Model loaded.")
-    
-    # emb_list = []
-    # bs = 64
-    # for i in range(0, len(texts), bs):
-    #     batch = texts[i:i+bs]
-    #     e = model.encode(batch, batch_size=bs, show_progress_bar=True, normalize_embeddings=True)
-    #     emb_list.append(np.asarray(e, dtype=np.float32))
-    # 
-    # emb = np.vstack(emb_list)
-    # 
-    # dim = emb.shape[1]
-    # index = faiss.IndexFlatIP(dim)
-    # index.add(emb)
-    # 
-    # faiss.write_index(index, str(out / "faiss.index"))
-    # np.save(out / "embeddings.npy", emb)
-    (out / "chunks.jsonl").write_text("\n".join(json.dumps({"text": t, "meta": m}, ensure_ascii=False) for t, m in zip(texts, metas)), encoding="utf-8")
-    (out / "manifests.json").write_text(json.dumps(file_manifests, ensure_ascii=False, indent=2), encoding="utf-8")
-    
+
+    (out / "chunks.jsonl").write_text(
+        "\n".join(json.dumps({"text": t, "meta": m}, ensure_ascii=False) for t, m in zip(texts, metas)),
+        encoding="utf-8",
+    )
+    (out / "manifests.json").write_text(json.dumps(file_manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    logging.info("Total chunks: %d", len(texts))
+
+    embed_model = "sentence-transformers/all-MiniLM-L6-v2"
+    embedder = TextEmbedding(model_name=embed_model)
+
+    first_vec = next(embedder.embed([texts[0]])).astype(np.float32)
+    dim = int(first_vec.shape[0])
+    logging.info("Embedding model: %s (dim=%d)", embed_model, dim)
+
+    client = QdrantClient(url=qdrant_url)
+
+    logging.info("Recreating Qdrant collection: %s", collection_name)
+    client.recreate_collection(
+        collection_name=collection_name,
+        vectors_config=VectorParams(size=dim, distance=Distance.COSINE),
+    )
+
+    BATCH = 128
+    points: List[PointStruct] = []
+
+    def flush_points():
+        nonlocal points
+        if points:
+            client.upsert(collection_name=collection_name, points=points)
+            points = []
+
+    logging.info("Uploading vectors to Qdrant...")
+    for i, vec in enumerate(tqdm(embedder.embed(texts), total=len(texts), desc="fastembed", unit="chunk")):
+        v = np.asarray(vec, dtype=np.float32)
+        payload = {
+            "source_file": metas[i].get("source_file"),
+            "header_path": metas[i].get("header_path", []),
+            "chunk_id": metas[i].get("chunk_id"),
+            "section_index": metas[i].get("section_index"),
+            "chunk_in_section": metas[i].get("chunk_in_section"),
+        }
+        points.append(PointStruct(id=i, vector=v, payload=payload))
+        if len(points) >= BATCH:
+            flush_points()
+
+    flush_points()
+
+    (out / "embed_model.txt").write_text(embed_model, encoding="utf-8")
+    (out / "qdrant_collection.txt").write_text(collection_name, encoding="utf-8")
+    logging.info("Done. Indexed files=%d, chunks=%d", len(md_files), len(texts))
     print(f"Indexed files: {len(md_files)}")
-    print(f"Total chunks: {len(all_chunks)}")
+    print(f"Total chunks: {len(texts)}")
     print("Done")
-    
+
 if __name__ == "__main__":
     ingest_markdown_files()

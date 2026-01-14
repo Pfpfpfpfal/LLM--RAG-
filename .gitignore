@@ -2,3 +2,4 @@
 data/index/
 app/__pycache__
 rag/__pycache__
+data/qdrant

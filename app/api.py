@@ -17,7 +17,7 @@ def load():
 
 @app.post("/ask")
 def ask(req: AskReq):
-    retrieved = store.search(req.query, k_bm25=10)
+    retrieved = store.search(req.query, k_vec=10, k_bm25=10, k_final=10)
     answer, cites = build_extractive_answer(req.query, retrieved, strict=req.strict)
     return {
         "answer": answer,
